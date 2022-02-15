@@ -1,7 +1,7 @@
 import tflib as lib
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 def Batchnorm(name, axes, inputs, is_training=None, stats_iter=None, update_moving_stats=True, fused=True):
     if ((axes == [0,2,3]) or (axes == [0,2])) and fused==True:

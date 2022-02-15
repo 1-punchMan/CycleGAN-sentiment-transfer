@@ -1,7 +1,7 @@
 """
 This is the module that given long text sequence generates short text sequence
 """
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from lib.ops import *
 
 def seq2seq(
@@ -19,8 +19,8 @@ def seq2seq(
     """
  
     with tf.variable_scope("encoder") as scope:
-        fw_cell = tf.contrib.rnn.LSTMCell(num_units=latent_dim, state_is_tuple=True)
-        bw_cell = tf.contrib.rnn.LSTMCell(num_units=latent_dim, state_is_tuple=True)
+        fw_cell = tf.nn.rnn_cell.LSTMCell(num_units=latent_dim, state_is_tuple=True)
+        bw_cell = tf.nn.rnn_cell.LSTMCell(num_units=latent_dim, state_is_tuple=True)
         
         #bi-lstm encoder
         encoder_outputs,state = tf.nn.bidirectional_dynamic_rnn(
@@ -37,7 +37,7 @@ def seq2seq(
         encoder_outputs = tf.concat([output_fw,output_bw],2)
         encoder_state_c = tf.concat((state_fw.c, state_bw.c), 1)
         encoder_state_h = tf.concat((state_fw.h, state_bw.h), 1)
-        encoder_state = tf.contrib.rnn.LSTMStateTuple(c=encoder_state_c, h=encoder_state_h)
+        encoder_state = tf.nn.rnn_cell.LSTMStateTuple(c=encoder_state_c, h=encoder_state_h)
 
 
     with tf.variable_scope("decoder") as scope:
@@ -45,7 +45,7 @@ def seq2seq(
         def feed_prev_loop(prev,i):
             return prev
 
-        cell = tf.contrib.rnn.LSTMCell(num_units=latent_dim*2, state_is_tuple=True)
+        cell = tf.nn.rnn_cell.LSTMCell(num_units=latent_dim*2, state_is_tuple=True)
         decoder_inputs = batch_to_time_major(decoder_inputs)
         
         #the decoder

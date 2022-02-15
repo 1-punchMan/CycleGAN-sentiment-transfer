@@ -2,7 +2,7 @@
 basic module of tensorflow
 """
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from functools import reduce
 
 def linear_matmul(inputs,weight):
@@ -26,7 +26,7 @@ def conv1d( inputs,
             name,
             stride=1,
             padding='SAME',
-            initializer=tf.contrib.layers.xavier_initializer(),
+            initializer=tf.keras.initializers.GlorotNormal(),
             activation_fn=tf.nn.elu):
 
     kernel_shape = [filter_width,inputs.get_shape()[-1],output_dim]

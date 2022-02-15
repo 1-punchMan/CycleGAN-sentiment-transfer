@@ -1,7 +1,7 @@
 import tflib as lib
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 
 def Layernorm(name, norm_axes, inputs):
     mean, var = tf.nn.moments(inputs, norm_axes, keep_dims=True)

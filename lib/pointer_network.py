@@ -1,7 +1,7 @@
 """
 This is the module that given long text sequence generates short text sequence
 """
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 from lib.ops import *
 
 
@@ -27,8 +27,8 @@ def pointer_network(
     decoder_inputs = batch_to_time_major(decoder_inputs)
 
     with tf.variable_scope("generator_encoder") as scope:
-        fw_cell = tf.contrib.rnn.LSTMCell(num_units=latent_dim, state_is_tuple=True)
-        bw_cell = tf.contrib.rnn.LSTMCell(num_units=latent_dim, state_is_tuple=True)
+        fw_cell = tf.nn.rnn_cell.LSTMCell(num_units=latent_dim, state_is_tuple=True)
+        bw_cell = tf.nn.rnn_cell.LSTMCell(num_units=latent_dim, state_is_tuple=True)
         #bi-lstm encoder
         encoder_outputs, state = tf.nn.bidirectional_dynamic_rnn(
             cell_fw = fw_cell,
@@ -44,7 +44,7 @@ def pointer_network(
         encoder_outputs = tf.concat([output_fw,output_bw],2)      #not pretty sure whether to reverse output_bw
         encoder_state_c = tf.concat((state_fw.c, state_bw.c), 1)
         encoder_state_h = tf.concat((state_fw.h, state_bw.h), 1)
-        encoder_state = tf.contrib.rnn.LSTMStateTuple(c=encoder_state_c, h=encoder_state_h)
+        encoder_state = tf.nn.rnn_cell.LSTMStateTuple(c=encoder_state_c, h=encoder_state_h)
 
     #pointer network
     with tf.variable_scope("generator_pointer_decoder") as scope:
@@ -57,7 +57,7 @@ def pointer_network(
         w_c = tf.get_variable(name="w_c", shape=[latent_dim])
 
         #cell
-        cell = tf.contrib.rnn.LSTMCell(num_units=latent_dim*2, state_is_tuple=True)
+        cell = tf.nn.rnn_cell.LSTMCell(num_units=latent_dim*2, state_is_tuple=True)
 
         #functions
         def input_projection(raw_input, last_attention_context):
