@@ -66,8 +66,8 @@ class cycle_gan:
         self.log_interval = params.log_interval
         
         # Early stopping
-        self.best_score = 0
-        self.stopping_cnt = 0
+        self.best_score = tf.Variable(0.)
+        self.stopping_cnt = tf.Variable(0)
         self.early_stopping = params.early_stopping
 
         self.build_model()
@@ -102,7 +102,7 @@ class cycle_gan:
                     (f"{model.name}_opt", model.optimizer)
                     ]
         }
-        checkpoint = tf.train.Checkpoint(**ckpt_dict)
+        checkpoint = tf.train.Checkpoint(**ckpt_dict, best_score=self.best_score, stopping_cnt=self.stopping_cnt)
             
         if self.ckpt_path is not None:
             # Load a checkpoint.
@@ -111,10 +111,17 @@ class cycle_gan:
         
         if self.mode == "train":
             # Load the last checkpoint.
-            last_ckpt_dir = os.path.join(self.out_dir, "checkpoints/last/")
-            self.ckpt_manager = tf.train.CheckpointManager(
-                checkpoint, directory=last_ckpt_dir, max_to_keep=1)
-            checkpoint.restore(self.ckpt_manager.latest_checkpoint)
+            self.last_ckpt_manager = tf.train.CheckpointManager(
+                checkpoint,
+                directory=os.path.join(self.out_dir, "checkpoints/last/"),
+                max_to_keep=1
+                )
+            self.best_ckpt_manager = tf.train.CheckpointManager(
+                checkpoint,
+                directory=os.path.join(self.out_dir, "checkpoints/best/"),
+                max_to_keep=1
+                )
+            checkpoint.restore(self.last_ckpt_manager.latest_checkpoint)
 
     def load_eval_models(self):
         # style accuracy → CNN-based style classifier
@@ -135,35 +142,6 @@ class cycle_gan:
 
         # # fluency → ppl(transformer decoder)
         # self.transformer_decoder = Generator(self.params, name="transformer_decoder").decode
-                
-    def save_checkpoint(self, valid_writer):
-
-        def better(a, b, mode):
-            return a < b if mode == "min" else a > b
-
-        # Save last.
-        self.ckpt_manager.save()
-        logger.info("Saved the last checkpoint.")
-        logger.info("")
-
-        # Save best.
-        if better(self.valid_score, self.best_score, "max"):
-            self.best_score = self.valid_score
-            path = os.path.join(self.out_dir, "checkpoints/best/ckpt")
-            self.ckpt_manager.checkpoint.save_counter.assign_sub(1)
-            self.ckpt_manager.checkpoint.save(path)
-            logger.info(f"New best score: {self.best_score:.4f}")
-            logger.info("Saved the best checkpoint.")
-        else:
-            self.stopping_cnt += 1
-            logger.info(f"The performamce hasn't improved for {self.stopping_cnt} / {self.early_stopping} epochs.")
-            logger.info(f"Best score: {self.best_score:.4f}")
-
-        with valid_writer.as_default():
-            tf.summary.scalar('best valid score', data=self.best_score, step=self.step)
-        if self.stopping_cnt >= self.early_stopping:
-            logger.info("Early stopping ...")
-            exit()
         
     def train_step(self):
         # Train the discriminators.
@@ -221,6 +199,10 @@ class cycle_gan:
             logger.info("")
         
     def train(self):
+
+        def better(a, b, mode):
+            return a < b if mode == "min" else a > b
+
         log_interval = self.log_interval
         self.dis_X_loss = self.dis_Y_loss = self.xy_l = self.yx_l = self.xy_r = self.yx_r = self.n_samples_d = self.n_samples_g = 0
         training_set, valid_set = (
@@ -245,6 +227,11 @@ class cycle_gan:
 
             # make summary
             if self.step % log_interval == 0:
+                # Save last.
+                self.last_ckpt_manager.save(checkpoint_number=self.step)
+                logger.info("Saved the last checkpoint.")
+                logger.info("")
+
                 step = self.step
                 dis_X_loss = self.dis_X_loss / self.n_samples_d
                 dis_Y_loss = self.dis_Y_loss / self.n_samples_d
@@ -271,8 +258,25 @@ class cycle_gan:
                 
             if self.step % self.epoch_size == 0:
                 with valid_writer.as_default():
-                    self.evaluate(valid_set, valid_writer)
-                self.save_checkpoint(valid_writer)
+                    self.evaluate(valid_set)
+
+                    # Save best.
+                    if better(self.valid_score, self.best_score, "max"):
+                        self.best_score.assign(self.valid_score)
+                        self.stopping_cnt.assign(0)
+                        self.best_ckpt_manager.save(checkpoint_number=self.step)
+                        logger.info(f"New best score: {self.best_score.numpy():.4f}")
+                        logger.info("Saved the best checkpoint.")
+                    else:
+                        self.stopping_cnt.assign_add(1)
+                        logger.info(f"The performance hasn't improved for {self.stopping_cnt.numpy()} / {self.early_stopping} epochs.")
+                        logger.info(f"Best score: {self.best_score.numpy():.4f}")
+
+                    # write to tensorboard
+                    tf.summary.scalar('best valid score', data=self.best_score, step=self.step)
+                    if self.stopping_cnt >= self.early_stopping:
+                        logger.info("Early stopping ...")
+                        exit()
 
             if self.num_steps is not None and self.step >= self.num_steps:
                 break
@@ -292,7 +296,7 @@ class cycle_gan:
         return sentences
 
     @torch.no_grad()
-    def evaluate(self, valid_set, valid_writer):
+    def evaluate(self, valid_set):
         logger.info("")
         logger.info("Start evaluation ...")
         step = self.step
