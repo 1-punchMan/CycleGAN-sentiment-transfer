@@ -1,9 +1,9 @@
+import torch
 from lib.generator import Generator 
 from lib.discriminator import Discriminator
 from lib.utils import from_path_import
 import tensorflow as tf
-import torch
-import os, sys
+import os, sys, re
 import data_pipeline
 from official.nlp.transformer.misc import get_model_params
 from types import SimpleNamespace
@@ -64,13 +64,17 @@ class cycle_gan:
         self.ckpt_path = params.ckpt_path
         self.epoch_size = params.epoch_size
         self.log_interval = params.log_interval
+        self.compute_metrics_flag = params.compute_metrics
         
         # Early stopping
+        self.valid_score = 0
         self.best_score = tf.Variable(0.)
         self.stopping_cnt = tf.Variable(0)
         self.early_stopping = params.early_stopping
 
-        self.build_model()
+        self.step = 0
+        self.log_params()
+        self.build_model()  # This line must be executed last since the keys in the dictionary {self.params} can't be added/removed after creating the checkpoint.
         
     def build_model(self):
         # Build the generators.
@@ -82,6 +86,7 @@ class cycle_gan:
             Generator(params, embedding=embedding, name="generator_Y2X")
             )
         self.models = [self.generator_X2Y, self.generator_Y2X]
+        self.load_eval_models()
 
         if self.mode == "train":
             # Build the discriminators.
@@ -90,8 +95,6 @@ class cycle_gan:
                 Discriminator(embedding=embedding, hidden_size=hidden_size, name="discriminator_Y")
             )
             self.models += [self.discriminator_X, self.discriminator_Y]
-
-            self.load_eval_models()
 
         # Define the checkpoint content.
         ckpt_dict = {
@@ -122,6 +125,26 @@ class cycle_gan:
                 max_to_keep=1
                 )
             checkpoint.restore(self.last_ckpt_manager.latest_checkpoint)
+
+    def log_params(self):
+        # get running command
+        command = ["python", sys.argv[0]]
+        for x in sys.argv[1:]:
+            if x.startswith('--'):
+                assert '"' not in x and "'" not in x
+                command.append(x)
+            else:
+                assert "'" not in x
+                if re.match('^[a-zA-Z0-9_]+$', x):
+                    command.append("%s" % x)
+                else:
+                    command.append("'%s'" % x)
+
+        params = self.params
+        params.command = ' '.join(command)
+        logger.info("\n".join("%s: %s" % (k, str(v))
+                            for k, v in sorted(dict(vars(params)).items())))
+        logger.info("Running command: %s" % params.command)
 
     def load_eval_models(self):
         # style accuracy → CNN-based style classifier
@@ -172,17 +195,13 @@ class cycle_gan:
         if self.step >= self.pretrain_discriminator_steps:
 
             while True:
-                try:
-                    X, Y = next(self.data_iter)
-                    batch_size = len(X)
-                    loss_X2Y, loss_XYX, loss_Y2X, loss_YXY = Generator.step(
-                        self.generator_X2Y, self.generator_Y2X, X, Y, self.discriminator_X, self.discriminator_Y, self.params
-                        )
-                except tf.errors.ResourceExhaustedError:
-                    logger.info("Out of GPU memory.")
-                    logger.info("Try a new batch.")
-                    continue
-                break
+                X, Y = next(self.data_iter)
+                batch_size = len(X)
+                loss_X2Y, loss_XYX, loss_Y2X, loss_YXY = Generator.step(
+                    self.generator_X2Y, self.generator_Y2X, X, Y, self.discriminator_X, self.discriminator_Y, self.params
+                    )
+                if loss_X2Y is not None:
+                    break
             
             self.xy_l += loss_X2Y * batch_size
             self.yx_l += loss_Y2X * batch_size
@@ -304,15 +323,23 @@ class cycle_gan:
         for key in ["X2Y", "Y2X"]:
             stats[key] = {
                 "style_accs": [],
+                "style_scores": [],
                 "content_preservation_scores": [],
                 "fluency_scores": []
             }
             
+        if not os.path.exists(os.path.join(self.out_dir, "generation/")):
+            os.makedirs(os.path.join(self.out_dir, "generation/X2Y/probs/"))
+            os.makedirs(os.path.join(self.out_dir, "generation/Y2X/probs/"))
         fake_X_batches, fake_Y_batches = [], []
         fake_X_txt, fake_Y_txt = [], []
         fake_X_file, fake_Y_file = (
             os.path.join(self.out_dir, f"generation/Y2X/fake_X-{step}.txt"),
             os.path.join(self.out_dir, f"generation/X2Y/fake_Y-{step}.txt")
+        )
+        fake_X_prob_file, fake_Y_prob_file = (
+            os.path.join(self.out_dir, f"generation/Y2X/probs/fake_X-{step}"),
+            os.path.join(self.out_dir, f"generation/X2Y/probs/fake_Y-{step}")
         )
 
         # generate sentences
@@ -327,43 +354,47 @@ class cycle_gan:
             for X, Y in valid_set:
                 X_txt_batch = self.tensor2txt(X)
                 Y_txt_batch = self.tensor2txt(Y)
-                X_txt.append("".join([sent + '\n' for sent in X_txt_batch]))
-                Y_txt.append("".join([sent + '\n' for sent in Y_txt_batch]))
+                X_txt.append('\n'.join(X_txt_batch))
+                Y_txt.append('\n'.join(Y_txt_batch))
                 
             self.X_txt, self.Y_txt = X_txt, Y_txt
-            if not os.path.exists(os.path.join(self.out_dir, "generation/")):
-                os.makedirs(os.path.join(self.out_dir, "generation/X2Y/"))
-                os.makedirs(os.path.join(self.out_dir, "generation/Y2X/"))
-
-            with (
-                open(X_file, 'w', encoding='utf-8') as fx,
-                open(Y_file, 'w', encoding='utf-8') as fy
-                ):
-                fx.write("".join(X_txt))
-                fy.write("".join(Y_txt))
+            if self.mode == "train":
+                with (
+                    open(X_file, 'w', encoding='utf-8') as fx,
+                    open(Y_file, 'w', encoding='utf-8') as fy
+                    ):
+                    fx.write('\n'.join(X_txt) + '\n')
+                    fy.write('\n'.join(Y_txt) + '\n')
 
         for (X, Y), X_txt, Y_txt in zip(valid_set, self.X_txt, self.Y_txt):
-            fake_Y, fake_Y_txt_batch = self.eval_step(self.generator_X2Y, X)
-            fake_X, fake_X_txt_batch = self.eval_step(self.generator_Y2X, Y)
+            fake_Y = self.eval_step(self.generator_X2Y, X)
+            fake_X = self.eval_step(self.generator_Y2X, Y)
             fake_X_batches.append(fake_X)
             fake_Y_batches.append(fake_Y)
-            fake_X_txt.append("".join([sent + '\n' for sent in fake_X_txt_batch]))
-            fake_Y_txt.append("".join([sent + '\n' for sent in fake_Y_txt_batch]))
+            fake_X_txt_batch = self.tensor2txt(fake_X)
+            fake_Y_txt_batch = self.tensor2txt(fake_Y)
+            fake_X_txt.append('\n'.join(fake_X_txt_batch))
+            fake_Y_txt.append('\n'.join(fake_Y_txt_batch))
 
-            # write to tensorboard
-            real = X_txt.strip().split('\n')[0]
-            fake = fake_Y_txt_batch[0]
-            tf.summary.text(f"(X2Y) {real}", fake, step=step)
-            real = Y_txt.strip().split('\n')[0]
-            fake = fake_X_txt_batch[0]
-            tf.summary.text(f"(Y2X) {real}", fake, step=step)
+            if self.mode == "train":
+                """ write to tensorboard """
+                real = X_txt.split('\n')[0]
+                fake = fake_Y_txt_batch[0]
+                tf.summary.text(f"(X2Y) {real}", fake, step=step)
+                real = Y_txt.split('\n')[0]
+                fake = fake_X_txt_batch[0]
+                tf.summary.text(f"(Y2X) {real}", fake, step=step)
             
-        with (
-            open(fake_X_file, 'w', encoding='utf-8') as fake_X_f,
-            open(fake_Y_file, 'w', encoding='utf-8') as fake_Y_f
-            ):
-            fake_X_f.write("".join(fake_X_txt))
-            fake_Y_f.write("".join(fake_Y_txt))
+        if self.mode == "train":
+            with (
+                open(fake_X_file, 'w', encoding='utf-8') as fake_X_f,
+                open(fake_Y_file, 'w', encoding='utf-8') as fake_Y_f
+                ):
+                fake_X_f.write('\n'.join(fake_X_txt) + '\n')
+                fake_Y_f.write('\n'.join(fake_Y_txt) + '\n')
+
+        if not self.compute_metrics_flag:
+            return
 
         # compute the metrics
         self.compute_metrics(fake_Y_batches, self.X_txt, fake_Y_txt, stats, "X2Y")
@@ -376,40 +407,51 @@ class cycle_gan:
             for k, v in value.items():
                 avg = sum(v) / len(v)
                 logger.info(f"{k}: {avg:.4f}")
-                tf.summary.scalar(f"{key} {k}", data=avg, step=step)
+                if self.mode == "train":
+                    tf.summary.scalar(f"{key} {k}", data=avg, step=step)
 
                 # Not using the fluency scores for validation.
-                if k != "fluency_scores":
+                if k != "fluency_scores" and k != "style_scores":
                     sum_ += avg
 
             value["avg"] = sum_ / 2
             logger.info(f"average: {value['avg']:.4f}")
 
+        # Save the predicted style probabilities.
+        if self.mode == "train":
+            with (
+                open(fake_X_prob_file, 'w', encoding='utf-8') as fake_X_f,
+                open(fake_Y_prob_file, 'w', encoding='utf-8') as fake_Y_f
+                ):
+                fake_X_f.write('\n'.join([str(n) for n in stats["X2Y"]["style_scores"]]) + '\n')
+                fake_Y_f.write('\n'.join([str(n) for n in stats["Y2X"]["style_scores"]]) + '\n')
+
         self.valid_score = (stats["X2Y"]["avg"] + stats["Y2X"]["avg"]) / 2
         logger.info('')
         logger.info(f"valid score: {self.valid_score:.4f}")
-        tf.summary.scalar("valid score", data=self.valid_score, step=step)
+        if self.mode == "train":
+            tf.summary.scalar("valid score", data=self.valid_score, step=step)
 
     def eval_step(self, generator_X2Y, X):
         output = generator_X2Y([X], training=False, greedy_search=False)
         fake_Y = output["outputs"]
-        fake_Y_txt = self.tensor2txt(fake_Y)
-        return fake_Y, fake_Y_txt
+        return fake_Y
 
     def compute_metrics(self, fake_Y_batches, X_txt_batches, fake_Y_txt_batches, stats, dir):
         stats = stats[dir]
         assert len(fake_Y_batches) == len(X_txt_batches) == len(fake_Y_txt_batches)
         for fake_Y, X_txt, fake_Y_txt in zip(fake_Y_batches, X_txt_batches, fake_Y_txt_batches):
             X_txt, fake_Y_txt = (
-                X_txt.strip().split('\n'),
-                fake_Y_txt.strip().split('\n')
+                X_txt.split('\n'),
+                fake_Y_txt.split('\n')
             )
             
             # style accuracy → CNN-based style classifier
             fake_Y = torch.tensor(fake_Y.numpy())
             style = 0 if dir == "Y2X" else 1
-            style_accs = self.compute_sa(fake_Y, style)
-            stats["style_accs"] += style_accs
+            style_predictions, style_scores = self.compute_sa(fake_Y, style)
+            stats["style_accs"] += style_predictions
+            stats["style_scores"] += style_scores
 
             # content preservation → cos similarity(sentence transformer)
             content_preservation_scores = self.compute_cp(X_txt, fake_Y_txt)
@@ -422,7 +464,9 @@ class cycle_gan:
     def compute_sa(self, sent_batch, style):
         output = self.style_classifier(sent_batch)   # (batch_size, 2)
         output = F.softmax(output, dim=1)
-        return output[:, style].tolist()
+        output = output[:, style]
+        pred = output >= 0.5
+        return pred.tolist(), output.tolist()
 
     def compute_cp(self, real_batch, fake_batch):
         emb_real = self.sentence_transformer.encode(real_batch, show_progress_bar=False, convert_to_tensor=True)
@@ -475,42 +519,27 @@ class cycle_gan:
     #     return tf.exp(loss).numpy().tolist()
 
     def test(self):
-        pass
-    #     sentence = 'hi'
-    #     gen_model_dir = os.path.join(self.model_dir,'generator/')
-    #     self.sess.run(tf.global_variables_initializer())
-    #     self.generator_saver.restore(self.sess, tf.train.latest_checkpoint(gen_model_dir))
-    #     print('please enter one negative sentence')
+        valid_set = data_pipeline.get_valid_set(vars(self.params))
+        self.evaluate(valid_set)
 
-    #     while(sentence):
-    #         sentence = input('>')
-    #         #sentence = sentence.split(':')[1]
-    #         input_sent_vec = self.utils.sent2id(sentence)
-    #         print(input_sent_vec)
-    #         sent_vec = np.zeros((self.batch_size,self.sequence_length),dtype=np.int32)
-    #         sent_vec[0] = input_sent_vec
+    def file_test(self):
 
-    #         feed_dict = {
-    #                 self.X2Y_inputs:sent_vec
-    #         }
-    #         preds = self.sess.run([self.X2Y_test_outputs],feed_dict)
-    #         pred_sent = self.utils.vec2sent(preds[0][0])
-    #         print(pred_sent)
+        def read(file):
+            
+            with open(file, 'r') as f:
+                lines = [line.strip() for line in f.readlines()]
 
-    # def file_test(self):
-    #     line_count = 0
-    #     out_fp = open('test_out.txt','w')
-    #     gen_model_dir = os.path.join(self.model_dir,'generator/')
-    #     self.sess.run(tf.global_variables_initializer())
-    #     self.generator_saver.restore(self.sess, tf.train.latest_checkpoint(gen_model_dir))
-    #     for test_batch in self.utils.test_data_generator():
-    #         feed_dict = {self.X2Y_inputs:test_batch}
-    #         preds = self.sess.run([self.X2Y_test_outputs],feed_dict)
-    #         preds = preds[0]
-    #         for pred in preds:
-    #             out_fp.write(self.utils.vec2sent(pred) + '\n')
-    #             line_count += 1
-    #             if line_count>=28658:
-    #                 break
-    #         if line_count>=28658:
-    #             break
+            for i in range(0, len(lines), 4):
+                yield lines[i:i+4]
+
+        X_file, fake_Y_file = (
+            "/home/zchen/encyclopedia-text-style-transfer/CycleGAN-sentiment-transfer/experiments/ETST/4/generation/Y2X/Y.txt",
+            "/home/zchen/encyclopedia-text-style-transfer/CycleGAN-sentiment-transfer/experiments/ETST/4/generation/Y2X/fake_X-1000.txt"
+        )
+        for X_txt, fake_Y_txt in zip(read(X_file), read(fake_Y_file)):
+            content_preservation_scores = self.compute_cp(X_txt, fake_Y_txt)
+            print()
+            print("X_txt:")
+            print(X_txt)
+            print("fake_Y_txt:")
+            print(fake_Y_txt)

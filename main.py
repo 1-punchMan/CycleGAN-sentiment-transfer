@@ -15,11 +15,12 @@ def parse():
     parser = argparse.ArgumentParser(description="cycle GAN")
     parser.add_argument('-out_dir','--out_dir',default='train_model',help='output model weight dir')
     parser.add_argument('-n_tokens','--n_tokens',default=3000,type=int,help='# of tokens per batch')
+    parser.add_argument('-static_batch','--static_batch',default=False, action='store_true',help='')
     parser.add_argument('-wiki_dir','--wiki_dir',help='')
     parser.add_argument('-baidu_dir','--baidu_dir',help='')
     parser.add_argument('-vocab_file','--vocab_file',help='')
     parser.add_argument('-param_set', '--param_set', default="base", help='')
-    parser.add_argument('-learning_rate', '--learning_rate', default=10e-4, type=float, help='transformer learning rate')
+    parser.add_argument('-learning_rate', '--learning_rate', default=1e-4, type=float, help='transformer learning rate')
     parser.add_argument('-epoch_size','--epoch_size',default=1000,type=int,help='# of steps per epoch')
     parser.add_argument('-log_interval','--log_interval',default=100,type=int,help='log every # steps')
     parser.add_argument('-num_steps','--num_steps',type=int,help='number of steps')
@@ -31,6 +32,7 @@ def parse():
     parser.add_argument('-ckpt_path','--ckpt_path',help='load a checkpoint')
     parser.add_argument('-mode', '--mode',default='train',help='train, file_test, test')
     parser.add_argument('-beam_size','--beam_size',default=1,type=int,help='')
+    parser.add_argument('-not_computing_metrics','--not_computing_metrics', dest="compute_metrics" ,default=True, action='store_false',help='')
     args = parser.parse_args()
     return args
 

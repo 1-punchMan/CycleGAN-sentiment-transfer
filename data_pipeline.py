@@ -336,7 +336,7 @@ def get_valid_set(params):
         # into sentences, and finally expand to a global batch. It could prove
         # the global batch divisble for distribution strategy.
         int(params["n_tokens"] // params["num_gpus"] // max_length * params["num_gpus"]),
-        drop_remainder=True)
+        drop_remainder=False)
   else:
     # Group and batch such that each batch has examples of similar length.
     # TODO(xunkai): _batch_examples might need to do something special for
